@@ -8,84 +8,55 @@ import (
 // DetectSmartPaths analyzes the target URL and generates the most effective attack paths.
 func DetectSmartPaths(rawURL string) *SmartPaths {
 	u, _ := url.Parse(rawURL)
+	baseURL := u.Scheme + "://" + u.Host
+	urlPath := strings.Trim(u.Path, "/")
 
 	paths := &SmartPaths{
-		LoginGET:  u.String(),
-		LoginPOST: u.String(),
-		Dashboard: u.String(),
-		Profile:   u.String(),
+		LoginGET:  rawURL,
+		LoginPOST: rawURL,
+		Dashboard: baseURL,
+		Profile:   baseURL,
 	}
 
-	// Clean base URL for path construction
-	baseURL := u.Scheme + "://" + u.Host
-
-	// Extract significant paths from the URL
-	pathParts := strings.Split(strings.Trim(u.Path, "/"), "/")
-
-	// Detect common CMS/Script patterns
-	hasSMS := false
-	hasAdmin := false
-	hasAPI := false
-	hasUser := false
-
-	for _, part := range pathParts {
-		partLower := strings.ToLower(part)
-		switch {
-		case strings.Contains(partLower, "sms"):
-			hasSMS = true
-		case strings.Contains(partLower, "admin"):
-			hasAdmin = true
-		case strings.Contains(partLower, "api"):
-			hasAPI = true
-		case strings.Contains(partLower, "user"):
-			hasUser = true
-		}
-	}
-
-	// Generate login paths based on detected patterns
-	if hasSMS {
-		prefix := strings.Join(pathParts, "/")
-		paths.LoginGET = baseURL + "/" + prefix + "/SignIn"
-		paths.LoginPOST = baseURL + "/" + prefix + "/signmein"
-		paths.Dashboard = baseURL + "/" + prefix + "/test/"
-		paths.Profile = baseURL + "/" + prefix + "/test/Profile"
-	} else if hasAdmin {
-		prefix := strings.Join(pathParts, "/")
-		paths.LoginGET = baseURL + "/" + prefix + "/login"
-		paths.LoginPOST = baseURL + "/" + prefix + "/login"
-		paths.Dashboard = baseURL + "/" + prefix + "/dashboard"
-		paths.Profile = baseURL + "/" + prefix + "/profile"
-	} else if hasAPI {
-		prefix := strings.Join(pathParts, "/")
-		paths.LoginGET = baseURL + "/" + prefix + "/auth/login"
-		paths.LoginPOST = baseURL + "/" + prefix + "/auth/login"
-		paths.Dashboard = baseURL + "/" + prefix + "/dashboard"
-		paths.Profile = baseURL + "/" + prefix + "/me"
-	} else if hasUser {
-		prefix := strings.Join(pathParts, "/")
-		paths.LoginGET = baseURL + "/" + prefix + "/login"
-		paths.LoginPOST = baseURL + "/" + prefix + "/login"
-		paths.Dashboard = baseURL + "/" + prefix + "/account"
-		paths.Profile = baseURL + "/" + prefix + "/profile"
+	// Extract the "base prefix" — everything before the last path segment
+	// e.g. "/sms/SignIn" → base prefix = "/sms", action = "SignIn"
+	// e.g. "/login" → base prefix = "", action = "login"
+	lastSlash := strings.LastIndex(urlPath, "/")
+	var basePrefix, action string
+	if lastSlash >= 0 {
+		basePrefix = "/" + urlPath[:lastSlash]
+		action = urlPath[lastSlash+1:]
 	} else {
-		// Generic web app detection — try common paths
-		paths.LoginGET = baseURL + "/login"
-		paths.LoginPOST = baseURL + "/login"
-		paths.Dashboard = baseURL + "/dashboard"
-		paths.Profile = baseURL + "/profile"
-
-		// Check if the URL itself is a login page
-		if strings.Contains(strings.ToLower(u.Path), "login") || strings.Contains(strings.ToLower(u.Path), "signin") {
-			paths.LoginGET = u.String()
-			paths.LoginPOST = u.String()
-		}
+		basePrefix = ""
+		action = urlPath
 	}
 
-	// Detect admin path if exists
-	if hasAdmin {
-		prefix := strings.Join(pathParts, "/")
-		paths.AdminPath = baseURL + "/" + prefix + "/"
+	// Detect action type
+	actionLower := strings.ToLower(action)
+
+	// Determine POST endpoint based on known patterns
+	postAction := action // default: same as GET
+	switch {
+	case actionLower == "signin":
+		postAction = "signmein"
+	case actionLower == "login":
+		postAction = "signmein" // fallback for login pages
+	case actionLower == "signmein":
+		// Already POST endpoint, keep as is
 	}
+
+	// Build correct GET and POST URLs
+	if basePrefix != "" {
+		paths.LoginGET = baseURL + basePrefix + "/" + action
+		paths.LoginPOST = baseURL + basePrefix + "/" + postAction
+	} else {
+		paths.LoginGET = baseURL + "/" + action
+		paths.LoginPOST = baseURL + "/" + postAction
+	}
+
+	// Dashboard and Profile paths
+	paths.Dashboard = baseURL + basePrefix + "/test/"
+	paths.Profile = baseURL + basePrefix + "/test/Profile"
 
 	return paths
 }
