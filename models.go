@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sync"
+	//"sync"
 	"sync/atomic"
 	"time"
 )
