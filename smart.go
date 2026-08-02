@@ -6,21 +6,22 @@ import (
 )
 
 // DetectSmartPaths analyzes the target URL and generates the most effective attack paths.
+// It also detects if the login page contains a CSRF token (like 'etkk').
 func DetectSmartPaths(rawURL string) *SmartPaths {
 	u, _ := url.Parse(rawURL)
 	baseURL := u.Scheme + "://" + u.Host
 	urlPath := strings.Trim(u.Path, "/")
 
 	paths := &SmartPaths{
-		LoginGET:  rawURL,
-		LoginPOST: rawURL,
-		Dashboard: baseURL,
-		Profile:   baseURL,
+		LoginGET:    rawURL,
+		LoginPOST:   rawURL,
+		Dashboard:   baseURL,
+		Profile:     baseURL,
+		CSRFEnabled: false,
+		CSRFToken:   "etkk", // default CSRF token name
 	}
 
 	// Extract the "base prefix" — everything before the last path segment
-	// e.g. "/sms/SignIn" → base prefix = "/sms", action = "SignIn"
-	// e.g. "/login" → base prefix = "", action = "login"
 	lastSlash := strings.LastIndex(urlPath, "/")
 	var basePrefix, action string
 	if lastSlash >= 0 {
@@ -35,14 +36,12 @@ func DetectSmartPaths(rawURL string) *SmartPaths {
 	actionLower := strings.ToLower(action)
 
 	// Determine POST endpoint based on known patterns
-	postAction := action // default: same as GET
+	postAction := action
 	switch {
-	case actionLower == "signin":
-		postAction = "signmein"
-	case actionLower == "login":
-		postAction = "signmein" // fallback for login pages
+	case actionLower == "login" || actionLower == "signin":
+		postAction = "signin"
 	case actionLower == "signmein":
-		// Already POST endpoint, keep as is
+		postAction = "signmein"
 	}
 
 	// Build correct GET and POST URLs
@@ -55,8 +54,15 @@ func DetectSmartPaths(rawURL string) *SmartPaths {
 	}
 
 	// Dashboard and Profile paths
-	paths.Dashboard = baseURL + basePrefix + "/test/"
-	paths.Profile = baseURL + basePrefix + "/test/Profile"
+	paths.Dashboard = baseURL + basePrefix + "/agent/SMSCDRReports"
+	paths.Profile = baseURL + basePrefix + "/agent/MySMSNumbers"
+
+	// Detect CSRF token pattern from the URL
+	// Most SMS panels use 'etkk' as the CSRF token
+	if strings.Contains(rawURL, "login") || strings.Contains(rawURL, "signin") {
+		paths.CSRFEnabled = true
+		paths.CSRFToken = "etkk"
+	}
 
 	return paths
 }
