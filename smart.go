@@ -6,37 +6,41 @@ import (
 )
 
 // DetectSmartPaths analyzes the target URL and generates the most effective attack paths.
-// It also detects if the login page contains a CSRF token (like 'etkk').
 func DetectSmartPaths(rawURL string) *SmartPaths {
-	u, _ := url.Parse(rawURL)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		// Fallback
+		return &SmartPaths{
+			LoginGET:  rawURL,
+			LoginPOST: rawURL,
+		}
+	}
+
 	baseURL := u.Scheme + "://" + u.Host
 	urlPath := strings.Trim(u.Path, "/")
 
-	paths := &SmartPaths{
-		LoginGET:    rawURL,
-		LoginPOST:   rawURL,
-		Dashboard:   baseURL,
-		Profile:     baseURL,
-		CSRFEnabled: false,
-		CSRFToken:   "etkk", // default CSRF token name
-	}
-
-	// Extract the "base prefix" — everything before the last path segment
+	// -------------------------------------------
+	// 1. Find the ACTION (last part of path)
+	//    e.g. /ints/login  -> action = "login"
+	//         /login       -> action = "login"
+	// -------------------------------------------
 	lastSlash := strings.LastIndex(urlPath, "/")
 	var basePrefix, action string
 	if lastSlash >= 0 {
-		basePrefix = "/" + urlPath[:lastSlash]
-		action = urlPath[lastSlash+1:]
+		basePrefix = "/" + urlPath[:lastSlash]   // "/ints"
+		action = urlPath[lastSlash+1:]           // "login"
 	} else {
 		basePrefix = ""
-		action = urlPath
+		action = urlPath                         // "login"
 	}
 
-	// Detect action type
+	// -------------------------------------------
+	// 2. Detect POST endpoint from action
+	//    login / signin  -> signin
+	//    signmein        -> signmein
+	// -------------------------------------------
 	actionLower := strings.ToLower(action)
-
-	// Determine POST endpoint based on known patterns
-	postAction := action
+	postAction := action // default same
 	switch {
 	case actionLower == "login" || actionLower == "signin":
 		postAction = "signin"
@@ -44,25 +48,33 @@ func DetectSmartPaths(rawURL string) *SmartPaths {
 		postAction = "signmein"
 	}
 
-	// Build correct GET and POST URLs
+	// -------------------------------------------
+	// 3. Build full URLs
+	// -------------------------------------------
+	paths := &SmartPaths{
+		LoginGET:  rawURL,
+		LoginPOST: rawURL,
+		Dashboard: baseURL,
+		Profile:   baseURL,
+	}
+
 	if basePrefix != "" {
-		paths.LoginGET = baseURL + basePrefix + "/" + action
+		paths.LoginGET  = baseURL + basePrefix + "/" + action
 		paths.LoginPOST = baseURL + basePrefix + "/" + postAction
 	} else {
-		paths.LoginGET = baseURL + "/" + action
+		paths.LoginGET  = baseURL + "/" + action
 		paths.LoginPOST = baseURL + "/" + postAction
 	}
 
-	// Dashboard and Profile paths
-	paths.Dashboard = baseURL + basePrefix + "/agent/SMSCDRReports"
-	paths.Profile = baseURL + basePrefix + "/agent/MySMSNumbers"
+	// -------------------------------------------
+	// 4. Dashboard & Profile guesses
+	// -------------------------------------------
+	paths.Dashboard = baseURL + basePrefix + "/agent/"
+	paths.Profile   = baseURL + basePrefix + "/agent/"
 
-	// Detect CSRF token pattern from the URL
-	// Most SMS panels use 'etkk' as the CSRF token
-	if strings.Contains(rawURL, "login") || strings.Contains(rawURL, "signin") {
-		paths.CSRFEnabled = true
-		paths.CSRFToken = "etkk"
-	}
+	// CSRF default (IMS SMS style)
+	paths.CSRFEnabled = true
+	paths.CSRFToken   = "etkk"
 
 	return paths
 }
