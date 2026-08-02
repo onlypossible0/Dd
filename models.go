@@ -199,6 +199,7 @@ func (s *Stats) Snapshot() StatsSnapshot {
 	}
 }
 
+/*
 // ==================== ATTACK REGISTRY ====================
 type AttackRegistry struct {
 	attacks map[string]*AttackInfo
@@ -246,3 +247,4 @@ func (ar *AttackRegistry) StopAll() {
 		}
 	}
 }
+*/
