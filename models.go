@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -42,7 +43,7 @@ type AttackInfo struct {
 	RailwayInfo    *RailwayDeploy  `json:"railway_info,omitempty"`
 	Orchestrator   *Orchestrator   `json:"-"`
 	CreatedAt      time.Time       `json:"created_at"`
-	Status         string          `json:"status"` // "active", "stopped", "deploying", "error"
+	Status         string          `json:"status"`
 	ActiveWorkers  int32           `json:"active_workers"`
 	LastChecked    time.Time       `json:"last_checked"`
 	LastResponses  []ResponseEntry `json:"last_responses"`
@@ -52,17 +53,19 @@ type AttackInfo struct {
 // ResponseEntry holds a single check result
 type ResponseEntry struct {
 	Time         time.Time `json:"time"`
-	ResponseTime float64   `json:"response_time"` // seconds, -1 = timeout
+	ResponseTime float64   `json:"response_time"`
 	HTTPCode     int       `json:"http_code"`
 }
 
 // SmartPaths holds the dynamically determined attack paths
 type SmartPaths struct {
-	LoginGET  string `json:"login_get"`
-	LoginPOST string `json:"login_post"`
-	Dashboard string `json:"dashboard"`
-	Profile   string `json:"profile"`
-	AdminPath string `json:"admin_path,omitempty"`
+	LoginGET    string `json:"login_get"`
+	LoginPOST   string `json:"login_post"`
+	Dashboard   string `json:"dashboard"`
+	Profile     string `json:"profile"`
+	AdminPath   string `json:"admin_path,omitempty"`
+	CSRFEnabled bool   `json:"csrf_enabled"`
+	CSRFToken   string `json:"csrf_token,omitempty"`
 }
 
 // RailwayDeploy holds Railway-specific information for redeployment
@@ -193,5 +196,53 @@ func (s *Stats) Snapshot() StatsSnapshot {
 		Active:  s.ActiveWorkers.Load(),
 		Uptime:  elapsed,
 		Layers:  layers,
+	}
+}
+
+// ==================== ATTACK REGISTRY ====================
+type AttackRegistry struct {
+	attacks map[string]*AttackInfo
+	mu      sync.RWMutex
+}
+
+func NewAttackRegistry() *AttackRegistry {
+	return &AttackRegistry{attacks: make(map[string]*AttackInfo)}
+}
+
+func (ar *AttackRegistry) Store(id string, info *AttackInfo) {
+	ar.mu.Lock()
+	ar.attacks[id] = info
+	ar.mu.Unlock()
+}
+
+func (ar *AttackRegistry) Load(id string) *AttackInfo {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	return ar.attacks[id]
+}
+
+func (ar *AttackRegistry) Delete(id string) {
+	ar.mu.Lock()
+	delete(ar.attacks, id)
+	ar.mu.Unlock()
+}
+
+func (ar *AttackRegistry) List() []*AttackInfo {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	list := make([]*AttackInfo, 0, len(ar.attacks))
+	for _, v := range ar.attacks {
+		list = append(list, v)
+	}
+	return list
+}
+
+func (ar *AttackRegistry) StopAll() {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	for _, info := range ar.attacks {
+		if info.Orchestrator != nil {
+			info.Orchestrator.Stop()
+		}
 	}
 }
