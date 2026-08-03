@@ -1,7 +1,7 @@
 package main
 
 import (
-	//"sync"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,6 +19,7 @@ type AttackRequest struct {
 	Layers       LayerConfig `json:"layers"`
 	Duration     int         `json:"duration"`
 	ProxyEnabled bool        `json:"proxy_enabled"`
+	SessionID    string      `json:"session_id,omitempty"` // PHPSESSID from frontend
 }
 
 type CreateAttackRequest struct {
@@ -59,6 +60,7 @@ type SmartPaths struct {
 	AdminPath   string `json:"admin_path,omitempty"`
 	CSRFEnabled bool   `json:"csrf_enabled"`
 	CSRFToken   string `json:"csrf_token,omitempty"`
+	SessionID   string `json:"session_id,omitempty"` // Dynamic PHPSESSID
 }
 
 type RailwayDeploy struct {
@@ -126,7 +128,7 @@ type WSMessage struct {
 
 func NewStats() *Stats {
 	s := &Stats{StartTime: time.Now()}
-	layerNames := []string{"Chunked Abuse", "Recursive Params", "Cache Bypass", "Connection Pool", "Parser Stress"}
+	layerNames := []string{"Chunked Abuse", "Recursive Params", "Insider DB Flood", "Connection Pool", "Parser Stress"}
 	for i, name := range layerNames {
 		s.Layers[i] = &LayerStats{Name: name}
 	}
@@ -177,5 +179,3 @@ func (s *Stats) Snapshot() StatsSnapshot {
 		Layers:  layers,
 	}
 }
-
-// AttackRegistry moved to server.go — do NOT duplicate here

